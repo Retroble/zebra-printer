@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Zebra ZD230 Label Printer</title>
+
+  <!-- PapaParse for CSV -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+  <!-- JsBarcode for barcode generation -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jsbarcode/3.11.5/JsBarcode.all.min.js"></script>
+
+  <style>
+    /* ───── Screen styles ───── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f0f2f5;
+      color: #222;
+      min-height: 100vh;
+      padding: 32px 16px;
+    }
+
+    .container {
+      max-width: 780px;
+      margin: 0 auto;
+    }
+
+    h1 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+    .subtitle {
+      font-size: 0.875rem;
+      color: #666;
+      margin-bottom: 28px;
+    }
+
+    /* Upload card */
+    .card {
+      background: #fff;
+      border-radius: 12px;
+      padding: 28px;
+      box-shadow: 0 1px 4px rgba(0,0,0,.08);
+      margin-bottom: 24px;
+    }
+    .card h2 {
+      font-size: 1rem;
+      font-weight: 600;
+      margin-bottom: 16px;
+    }
+
+    .drop-zone {
+      border: 2px dashed #bbb;
+      border-radius: 10px;
+      padding: 36px 20px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color .2s, background .2s;
+      position: relative;
+    }
+    .drop-zone:hover, .drop-zone.drag-over {
+      border-color: #2563eb;
+      background: #eff6ff;
+    }
+    .drop-zone input[type="file"] {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      cursor: pointer;
+    }
+    .drop-zone svg { margin-bottom: 10px; }
+    .drop-zone p { font-size: .9rem; color: #555; }
+    .drop-zone span { color: #2563eb; font-weight: 600; }
+
+    /* CSV format hint */
+    .hint {
+      margin-top: 14px;
+      font-size: .8rem;
+      color: #888;
+      background: #f8f9fa;
+      border-radius: 8px;
+      padding: 10px 14px;
+      line-height: 1.6;
+    }
+    .hint code {
+      background: #e9ecef;
+      padding: 1px 5px;
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: .8rem;
+    }
+
+    /* Toolbar */
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 20px;
+    }
+    .toolbar span {
+      font-size: .875rem;
+      color: #555;
+      margin-right: auto;
+    }
+
+    button {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 9px 18px;
+      border: none;
+      border-radius: 8px;
+      font-size: .875rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background .15s, opacity .15s;
+    }
+    button:disabled { opacity: .4; cursor: not-allowed; }
+
+    .btn-print {
+      background: #2563eb;
+      color: #fff;
+    }
+    .btn-print:hover:not(:disabled) { background: #1d4ed8; }
+
+    .btn-clear {
+      background: #f1f5f9;
+      color: #374151;
+    }
+    .btn-clear:hover:not(:disabled) { background: #e2e8f0; }
+
+    /* Label preview grid */
+    #preview-section { display: none; }
+
+    .label-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    /* Each label preview card — actual 30 × 15 mm ratio kept */
+    .label-card {
+      background: #fff;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      overflow: hidden;
+      box-shadow: 0 1px 3px rgba(0,0,0,.06);
+    }
+
+    /* ───── Label content (shared screen + print) ───── */
+    .label {
+      width:  113.39px; /* 30mm at 96dpi */
+      height:  56.69px; /* 15mm at 96dpi */
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 3px 4px 2px;
+      gap: 4px;
+      background: #fff;
+    }
+
+    .label svg {
+      max-width: 100%;
+      height: auto;
+      flex-shrink: 0;
+    }
+
+    .label .price {
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: .3px;
+      white-space: nowrap;
+      line-height: 1;
+    }
+
+    /* ───── Print styles ───── */
+    @media print {
+      @page {
+        size: 30mm 15mm;
+        margin: 0;
+      }
+
+      body {
+        background: none;
+        padding: 0;
+        margin: 0;
+      }
+
+      /* Hide everything except labels */
+      .no-print { display: none !important; }
+
+      #preview-section {
+        display: block !important;
+      }
+
+      .label-grid {
+        display: block;
+        gap: 0;
+      }
+
+      .label-card {
+        border: none;
+        box-shadow: none;
+        border-radius: 0;
+        /* force each label onto its own page */
+        page-break-after: always;
+        break-after: page;
+      }
+      .label-card:last-child {
+        page-break-after: avoid;
+        break-after: avoid;
+      }
+
+      .label {
+        width:  30mm;
+        height: 15mm;
+        padding: 1mm 1.5mm 0.5mm;
+        gap: 1mm;
+      }
+
+      .label .price {
+        font-size: 16pt;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ── Upload section (hidden on print) ── -->
+  <div class="container no-print">
+    <h1>🏷️ Zebra ZD230 Label Printer</h1>
+    <p class="subtitle">30 mm × 15 mm labels — upload a CSV to generate &amp; print</p>
+
+    <div class="card">
+      <h2>Upload CSV</h2>
+      <div class="drop-zone" id="dropZone">
+        <input type="file" id="csvFile" accept=".csv,.txt" />
+        <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" fill="none" viewBox="0 0 24 24" stroke="#2563eb" stroke-width="1.5">
+          <path stroke-linecap="round" stroke-linejoin="round"
+            d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5"/>
+        </svg>
+        <p><span>Click to browse</span> or drag &amp; drop your CSV here</p>
+      </div>
+
+      <div class="hint">
+        <strong>CSV format</strong> — column headers are case-insensitive.<br/>
+        Required columns: <code>barcode</code> and <code>price</code><br/>
+        Example: <code>barcode,price</code> → <code>5901234123457,£2.99</code>
+      </div>
+    </div>
+
+    <!-- Toolbar (shown once labels are loaded) -->
+    <div class="toolbar" id="toolbar" style="display:none;">
+      <span id="labelCount"></span>
+      <button class="btn-clear" id="clearBtn">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
+        </svg>
+        Clear
+      </button>
+      <button class="btn-print" id="printBtn">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round"
+            d="M6.72 13.829c-.24.03-.48.062-.72.096m.72-.096a42.415 42.415 0 0110.56 0m-10.56 0L6.34 18m10.94-4.171c.24.03.48.062.72.096m-.72-.096L17.66 18m0 0l.229 2.523a1.125 1.125 0 01-1.12 1.227H7.231c-.662 0-1.18-.568-1.12-1.227L6.34 18m11.318 0h1.091A2.25 2.25 0 0021 15.75V9.456c0-1.081-.768-2.015-1.837-2.175a48.055 48.055 0 00-1.913-.247M6.34 18H5.25A2.25 2.25 0 013 15.75V9.456c0-1.081.768-2.015 1.837-2.175a48.056 48.056 0 011.913-.247m10.5 0a48.536 48.536 0 00-10.5 0m10.5 0V3.375c0-.621-.504-1.125-1.125-1.125h-8.25c-.621 0-1.125.504-1.125 1.125v3.659M18 10.5h.008v.008H18V10.5zm-3 0h.008v.008H15V10.5z"/>
+        </svg>
+        Print Labels
+      </button>
+    </div>
+  </div>
+
+  <!-- ── Label preview / print area ── -->
+  <div class="container" id="preview-section">
+    <div class="label-grid" id="labelGrid"></div>
+  </div>
+
+  <script>
+    const fileInput   = document.getElementById('csvFile');
+    const dropZone    = document.getElementById('dropZone');
+    const labelGrid   = document.getElementById('labelGrid');
+    const previewSec  = document.getElementById('preview-section');
+    const toolbar     = document.getElementById('toolbar');
+    const labelCount  = document.getElementById('labelCount');
+    const printBtn    = document.getElementById('printBtn');
+    const clearBtn    = document.getElementById('clearBtn');
+
+    // ── Drag-and-drop ──
+    dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+    dropZone.addEventListener('drop', e => {
+      e.preventDefault();
+      dropZone.classList.remove('drag-over');
+      const file = e.dataTransfer.files[0];
+      if (file) processFile(file);
+    });
+
+    fileInput.addEventListener('change', () => {
+      if (fileInput.files[0]) processFile(fileInput.files[0]);
+    });
+
+    clearBtn.addEventListener('click', () => {
+      labelGrid.innerHTML = '';
+      previewSec.style.display = 'none';
+      toolbar.style.display    = 'none';
+      fileInput.value          = '';
+    });
+
+    printBtn.addEventListener('click', () => window.print());
+
+    // ── CSV processing ──
+    function processFile(file) {
+      Papa.parse(file, {
+        header: true,
+        skipEmptyLines: true,
+        complete({ data, meta }) {
+          // normalise header names to lowercase
+          const rows = data.map(row => {
+            const n = {};
+            Object.keys(row).forEach(k => { n[k.trim().toLowerCase()] = row[k].trim(); });
+            return n;
+          }).filter(r => r.barcode && r.price);
+
+          if (!rows.length) {
+            alert('No valid rows found.\nMake sure your CSV has "barcode" and "price" columns.');
+            return;
+          }
+
+          buildLabels(rows);
+        },
+        error(err) { alert('CSV parse error: ' + err.message); }
+      });
+    }
+
+    // ── Label builder ──
+    function buildLabels(rows) {
+      labelGrid.innerHTML = '';
+
+      rows.forEach(({ barcode, price }) => {
+        // Wrapper card (screen only decoration)
+        const card = document.createElement('div');
+        card.className = 'label-card';
+
+        // Label content
+        const label = document.createElement('div');
+        label.className = 'label';
+
+        // Price (top)
+        const priceEl = document.createElement('div');
+        priceEl.className = 'price';
+        // Always ensure £ prefix, avoid doubling if already present
+        const priceVal = price.replace(/^£/, '');
+        priceEl.textContent = '£' + priceVal;
+        label.appendChild(priceEl);
+
+        // Barcode SVG (below price)
+        const svgEl = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        label.appendChild(svgEl);
+
+        try {
+          JsBarcode(svgEl, barcode, {
+            format:       detectFormat(barcode),
+            displayValue: false,
+            margin:       0,
+            width:        1,
+            height:       14,
+          });
+        } catch (e) {
+          // Fallback: display barcode as text if format fails
+          svgEl.remove();
+          const fallback = document.createElement('span');
+          fallback.style.cssText = 'font-size:7px;font-family:monospace;word-break:break-all;text-align:center;';
+          fallback.textContent = barcode;
+          label.appendChild(fallback);
+        }
+
+        card.appendChild(label);
+        labelGrid.appendChild(card);
+      });
+
+      previewSec.style.display = 'block';
+      toolbar.style.display    = 'flex';
+      labelCount.textContent   = `${rows.length} label${rows.length !== 1 ? 's' : ''} ready`;
+    }
+
+    // ── Auto-detect barcode format ──
+    function detectFormat(code) {
+      code = code.replace(/\s/g, '');
+      if (/^\d{13}$/.test(code)) return 'EAN13';
+      if (/^\d{8}$/.test(code))  return 'EAN8';
+      if (/^\d{12}$/.test(code)) return 'UPC';
+      if (/^\d{1,20}$/.test(code)) return 'CODE128';
+      return 'CODE128'; // default — handles alphanumeric
+    }
+  </script>
+</body>
+</html>
