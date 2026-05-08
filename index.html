@@ -385,6 +385,7 @@
 
     printBtn.addEventListener('click', () => window.print());
     generateManualBtn.addEventListener('click', buildManualLabels);
+    window.addEventListener('beforeprint', refitManualLabelsForPrint);
 
     // ── CSV processing ──
     function processFile(file) {
@@ -493,7 +494,7 @@
         card.appendChild(label);
         labelGrid.appendChild(card);
 
-        fitManualText(textEl, label);
+        fitManualText(textEl, label, 2);
       }
 
       previewSec.style.display = 'block';
@@ -502,7 +503,7 @@
     }
 
     // ── Find the largest font size that fits in the label ──
-    function fitManualText(textEl, labelEl) {
+    function fitManualText(textEl, labelEl, safetyPx = 2) {
       const minSize = 8;
       const maxSize = 60;
       let low = minSize;
@@ -513,8 +514,8 @@
         const mid = Math.floor((low + high) / 2);
         textEl.style.fontSize = `${mid}px`;
 
-        const fitsWidth = textEl.scrollWidth <= textEl.clientWidth + 1;
-        const fitsHeight = textEl.scrollHeight <= labelEl.clientHeight;
+        const fitsWidth = textEl.scrollWidth <= (textEl.clientWidth - safetyPx);
+        const fitsHeight = textEl.scrollHeight <= (labelEl.clientHeight - safetyPx);
 
         if (fitsWidth && fitsHeight) {
           best = mid;
@@ -525,6 +526,17 @@
       }
 
       textEl.style.fontSize = `${best}px`;
+    }
+
+    function refitManualLabelsForPrint() {
+      const labels = labelGrid.querySelectorAll('.label');
+      labels.forEach(label => {
+        const textEl = label.querySelector('.free-text');
+        if (textEl) {
+          // Print engines can render glyphs slightly wider than screen.
+          fitManualText(textEl, label, 4);
+        }
+      });
     }
 
     // ── Auto-detect barcode format ──
