@@ -227,8 +227,8 @@
       text-align: center;
       font-size: 11px;
       font-weight: 600;
-      line-height: 1.2;
-      word-break: break-word;
+      line-height: 1.08;
+      overflow-wrap: anywhere;
       white-space: pre-wrap;
       overflow: hidden;
     }
@@ -359,6 +359,22 @@
     const manualText  = document.getElementById('manualText');
     const manualQty   = document.getElementById('manualQty');
     const generateManualBtn = document.getElementById('generateManualBtn');
+    const textMeasure = document.createElement('div');
+    textMeasure.style.cssText = [
+      'position:absolute',
+      'left:-9999px',
+      'top:-9999px',
+      'visibility:hidden',
+      'pointer-events:none',
+      'font-family:inherit',
+      'font-weight:600',
+      'text-align:center',
+      'padding:0',
+      'margin:0',
+      'line-height:1.08',
+      'overflow-wrap:anywhere'
+    ].join(';');
+    document.body.appendChild(textMeasure);
 
     // ── Drag-and-drop ──
     dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
@@ -503,19 +519,36 @@
     }
 
     // ── Find the largest font size that fits in the label ──
-    function fitManualText(textEl, labelEl, safetyPx = 2) {
+    function fitManualText(textEl, labelEl, safetyPx = 1) {
       const minSize = 8;
       const maxSize = 60;
       let low = minSize;
       let high = maxSize;
       let best = minSize;
+      const rawText = textEl.textContent || '';
+      const singleLine = !rawText.includes('\n');
+
+      textEl.style.whiteSpace = singleLine ? 'nowrap' : 'pre-wrap';
+      textEl.style.overflowWrap = singleLine ? 'normal' : 'anywhere';
+
+      const labelStyle = window.getComputedStyle(labelEl);
+      const availableWidth = labelEl.clientWidth - parseFloat(labelStyle.paddingLeft) - parseFloat(labelStyle.paddingRight) - safetyPx;
+      const availableHeight = labelEl.clientHeight - parseFloat(labelStyle.paddingTop) - parseFloat(labelStyle.paddingBottom) - safetyPx;
 
       while (low <= high) {
         const mid = Math.floor((low + high) / 2);
         textEl.style.fontSize = `${mid}px`;
+        textMeasure.style.fontSize = `${mid}px`;
+        textMeasure.style.whiteSpace = textEl.style.whiteSpace;
+        textMeasure.style.overflowWrap = textEl.style.overflowWrap;
+        textMeasure.style.width = `${Math.max(1, availableWidth)}px`;
+        textMeasure.textContent = rawText;
 
-        const fitsWidth = textEl.scrollWidth <= (textEl.clientWidth - safetyPx);
-        const fitsHeight = textEl.scrollHeight <= (labelEl.clientHeight - safetyPx);
+        const measuredWidth = textMeasure.scrollWidth;
+        const measuredHeight = textMeasure.scrollHeight;
+
+        const fitsWidth = measuredWidth <= availableWidth + 0.5;
+        const fitsHeight = measuredHeight <= availableHeight + 0.5;
 
         if (fitsWidth && fitsHeight) {
           best = mid;
@@ -534,7 +567,7 @@
         const textEl = label.querySelector('.free-text');
         if (textEl) {
           // Print engines can render glyphs slightly wider than screen.
-          fitManualText(textEl, label, 4);
+          fitManualText(textEl, label, 2);
         }
       });
     }
