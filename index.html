@@ -230,6 +230,7 @@
       line-height: 1.2;
       word-break: break-word;
       white-space: pre-wrap;
+      overflow: hidden;
     }
 
     /* ───── Print styles ───── */
@@ -491,11 +492,39 @@
         label.appendChild(textEl);
         card.appendChild(label);
         labelGrid.appendChild(card);
+
+        fitManualText(textEl, label);
       }
 
       previewSec.style.display = 'block';
       toolbar.style.display    = 'flex';
       labelCount.textContent   = `${qty} text label${qty !== 1 ? 's' : ''} ready`;
+    }
+
+    // ── Find the largest font size that fits in the label ──
+    function fitManualText(textEl, labelEl) {
+      const minSize = 8;
+      const maxSize = 60;
+      let low = minSize;
+      let high = maxSize;
+      let best = minSize;
+
+      while (low <= high) {
+        const mid = Math.floor((low + high) / 2);
+        textEl.style.fontSize = `${mid}px`;
+
+        const fitsWidth = textEl.scrollWidth <= textEl.clientWidth + 1;
+        const fitsHeight = textEl.scrollHeight <= labelEl.clientHeight;
+
+        if (fitsWidth && fitsHeight) {
+          best = mid;
+          low = mid + 1;
+        } else {
+          high = mid - 1;
+        }
+      }
+
+      textEl.style.fontSize = `${best}px`;
     }
 
     // ── Auto-detect barcode format ──
