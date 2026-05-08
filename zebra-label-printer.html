@@ -93,6 +93,50 @@
       font-size: .8rem;
     }
 
+    .manual-editor {
+      margin-top: 18px;
+      display: grid;
+      gap: 12px;
+    }
+
+    .manual-editor h3 {
+      font-size: .95rem;
+      font-weight: 600;
+      color: #1f2937;
+    }
+
+    .manual-editor textarea {
+      width: 100%;
+      min-height: 88px;
+      resize: vertical;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-size: .9rem;
+      font-family: inherit;
+      line-height: 1.4;
+    }
+
+    .manual-controls {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .manual-controls label {
+      font-size: .85rem;
+      color: #4b5563;
+    }
+
+    .manual-controls input[type="number"] {
+      width: 84px;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: .9rem;
+    }
+
     /* Toolbar */
     .toolbar {
       display: flex;
@@ -178,6 +222,16 @@
       line-height: 1;
     }
 
+    .label .free-text {
+      width: 100%;
+      text-align: center;
+      font-size: 11px;
+      font-weight: 600;
+      line-height: 1.2;
+      word-break: break-word;
+      white-space: pre-wrap;
+    }
+
     /* ───── Print styles ───── */
     @media print {
       @page {
@@ -226,6 +280,10 @@
       .label .price {
         font-size: 16pt;
       }
+
+      .label .free-text {
+        font-size: 9pt;
+      }
     }
   </style>
 </head>
@@ -251,6 +309,16 @@
         <strong>CSV format</strong> — column headers are case-insensitive.<br/>
         Required columns: <code>barcode</code> and <code>price</code><br/>
         Example: <code>barcode,price</code> → <code>5901234123457,£2.99</code>
+      </div>
+
+      <div class="manual-editor">
+        <h3>Edit mode (no CSV)</h3>
+        <textarea id="manualText" placeholder="Type the text you want centered on the label..."></textarea>
+        <div class="manual-controls">
+          <label for="manualQty">Quantity</label>
+          <input type="number" id="manualQty" min="1" value="1" />
+          <button type="button" class="btn-print" id="generateManualBtn">Generate Text Labels</button>
+        </div>
       </div>
     </div>
 
@@ -287,6 +355,9 @@
     const labelCount  = document.getElementById('labelCount');
     const printBtn    = document.getElementById('printBtn');
     const clearBtn    = document.getElementById('clearBtn');
+    const manualText  = document.getElementById('manualText');
+    const manualQty   = document.getElementById('manualQty');
+    const generateManualBtn = document.getElementById('generateManualBtn');
 
     // ── Drag-and-drop ──
     dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
@@ -307,9 +378,12 @@
       previewSec.style.display = 'none';
       toolbar.style.display    = 'none';
       fileInput.value          = '';
+      manualText.value         = '';
+      manualQty.value          = '1';
     });
 
     printBtn.addEventListener('click', () => window.print());
+    generateManualBtn.addEventListener('click', buildManualLabels);
 
     // ── CSV processing ──
     function processFile(file) {
@@ -384,6 +458,44 @@
       previewSec.style.display = 'block';
       toolbar.style.display    = 'flex';
       labelCount.textContent   = `${rows.length} label${rows.length !== 1 ? 's' : ''} ready`;
+    }
+
+    // ── Free-text label builder (no CSV required) ──
+    function buildManualLabels() {
+      const text = manualText.value.trim();
+      const qty = Number.parseInt(manualQty.value, 10);
+
+      if (!text) {
+        alert('Please type some text for edit mode.');
+        return;
+      }
+
+      if (!Number.isInteger(qty) || qty < 1) {
+        alert('Quantity must be at least 1.');
+        return;
+      }
+
+      labelGrid.innerHTML = '';
+
+      for (let i = 0; i < qty; i += 1) {
+        const card = document.createElement('div');
+        card.className = 'label-card';
+
+        const label = document.createElement('div');
+        label.className = 'label';
+
+        const textEl = document.createElement('div');
+        textEl.className = 'free-text';
+        textEl.textContent = text;
+
+        label.appendChild(textEl);
+        card.appendChild(label);
+        labelGrid.appendChild(card);
+      }
+
+      previewSec.style.display = 'block';
+      toolbar.style.display    = 'flex';
+      labelCount.textContent   = `${qty} text label${qty !== 1 ? 's' : ''} ready`;
     }
 
     // ── Auto-detect barcode format ──
