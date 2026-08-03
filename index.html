@@ -5,10 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Zebra ZD230 Label Printer</title>
 
-  <!-- PapaParse for CSV -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
-  <!-- JsBarcode for barcode generation -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/jsbarcode/3.11.5/JsBarcode.all.min.js"></script>
+  <!-- JsBarcode (local — works in extension CSP and on Vercel) -->
+  <script src="jsbarcode.min.js"></script>
 
   <style>
     /* ───── Screen styles ───── */
@@ -292,8 +290,8 @@
 
   <!-- ── Upload section (hidden on print) ── -->
   <div class="container no-print">
-    <h1>🏷️ Zebra ZD230 Label Printer</h1>
-    <p class="subtitle">30 mm × 15 mm labels — upload a CSV to generate &amp; print</p>
+    <h1>Zebra ZD230 Label Printer</h1>
+    <p class="subtitle">30 mm × 15 mm labels — upload a CSV, or open from Retroble trade-in</p>
 
     <div class="card">
       <h2>Upload CSV</h2>
@@ -403,28 +401,71 @@
     generateManualBtn.addEventListener('click', buildManualLabels);
     window.addEventListener('beforeprint', refitManualLabelsForPrint);
 
-    // ── CSV processing ──
-    function processFile(file) {
-      Papa.parse(file, {
-        header: true,
-        skipEmptyLines: true,
-        complete({ data, meta }) {
-          // normalise header names to lowercase
-          const rows = data.map(row => {
-            const n = {};
-            Object.keys(row).forEach(k => { n[k.trim().toLowerCase()] = row[k].trim(); });
-            return n;
-          }).filter(r => r.barcode && r.price);
+    // ── Queue from Retroble trade-in (localStorage bridge) ──
+    const QUEUE_KEY = 'RETROBLE_ZEBRA_LABELS';
+    (function loadQueuedLabels() {
+      try {
+        const raw = localStorage.getItem(QUEUE_KEY);
+        if (!raw) return;
+        localStorage.removeItem(QUEUE_KEY);
+        const payload = JSON.parse(raw);
+        const rows = Array.isArray(payload) ? payload : (payload && payload.rows);
+        if (!rows || !rows.length) return;
+        const normalized = rows.map(function (r) {
+          return {
+            barcode: String(r.barcode || r.code || '20635').trim(),
+            price: String(r.price != null ? r.price : '').trim()
+          };
+        }).filter(function (r) { return r.barcode && r.price; });
+        if (!normalized.length) return;
+        buildLabels(normalized);
+        const params = new URLSearchParams(location.search);
+        if (params.get('autoprint') === '1') {
+          setTimeout(function () { window.print(); }, 400);
+        }
+      } catch (e) {
+        console.warn('Could not load Retroble label queue:', e);
+      }
+    })();
 
-          if (!rows.length) {
-            alert('No valid rows found.\nMake sure your CSV has "barcode" and "price" columns.');
-            return;
-          }
-
-          buildLabels(rows);
-        },
-        error(err) { alert('CSV parse error: ' + err.message); }
+    // ── CSV processing (no PapaParse — keeps extension CSP happy) ──
+    function parseCsv(text) {
+      const lines = String(text || '').replace(/^\uFEFF/, '').split(/\r?\n/).filter(function (l) {
+        return l.trim().length;
       });
+      if (lines.length < 2) return [];
+      const headers = lines[0].split(',').map(function (h) {
+        return h.trim().toLowerCase().replace(/^"|"$/g, '');
+      });
+      const bi = headers.indexOf('barcode');
+      const pi = headers.indexOf('price');
+      if (bi < 0 || pi < 0) return [];
+      const rows = [];
+      for (let i = 1; i < lines.length; i++) {
+        const cols = lines[i].split(',').map(function (c) {
+          return c.trim().replace(/^"|"$/g, '');
+        });
+        const barcode = cols[bi];
+        const price = cols[pi];
+        if (barcode && price) rows.push({ barcode: barcode, price: price });
+      }
+      return rows;
+    }
+
+    function processFile(file) {
+      const reader = new FileReader();
+      reader.onload = function () {
+        const rows = parseCsv(reader.result);
+        if (!rows.length) {
+          alert('No valid rows found.\nMake sure your CSV has "barcode" and "price" columns.');
+          return;
+        }
+        buildLabels(rows);
+      };
+      reader.onerror = function () {
+        alert('Could not read that file.');
+      };
+      reader.readAsText(file);
     }
 
     // ── Label builder ──
