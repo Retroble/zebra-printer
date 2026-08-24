@@ -135,6 +135,31 @@
       font-size: .9rem;
     }
 
+    .btn-zpl {
+      background: #047857;
+      color: #fff;
+    }
+    .btn-zpl:hover:not(:disabled) { background: #065f46; }
+
+    /* ZPL transport status */
+    .zpl-status {
+      font-size: .8125rem;
+      line-height: 1.5;
+      border-radius: 8px;
+      padding: 10px 14px;
+      margin-bottom: 20px;
+      border: 1px solid transparent;
+    }
+    .zpl-status.info { background: #eff6ff; border-color: #bfdbfe; color: #1e40af; }
+    .zpl-status.ok   { background: #ecfdf5; border-color: #a7f3d0; color: #065f46; }
+    .zpl-status.err  { background: #fef2f2; border-color: #fecaca; color: #991b1b; }
+    .zpl-status code {
+      background: rgba(0,0,0,.06);
+      padding: 1px 5px;
+      border-radius: 4px;
+      font-family: monospace;
+    }
+
     /* Unmapped-price warning */
     .warning {
       background: #fef3c7;
@@ -389,14 +414,23 @@
         </svg>
         Clear
       </button>
-      <button class="btn-print" id="printBtn">
+      <button class="btn-zpl" id="zplBtn">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+        </svg>
+        Print via ZPL
+      </button>
+      <button class="btn-clear" id="zplSaveBtn">Save .zpl</button>
+      <button class="btn-clear" id="printBtn">
         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
           <path stroke-linecap="round" stroke-linejoin="round"
             d="M6.72 13.829c-.24.03-.48.062-.72.096m.72-.096a42.415 42.415 0 0110.56 0m-10.56 0L6.34 18m10.94-4.171c.24.03.48.062.72.096m-.72-.096L17.66 18m0 0l.229 2.523a1.125 1.125 0 01-1.12 1.227H7.231c-.662 0-1.18-.568-1.12-1.227L6.34 18m11.318 0h1.091A2.25 2.25 0 0021 15.75V9.456c0-1.081-.768-2.015-1.837-2.175a48.055 48.055 0 00-1.913-.247M6.34 18H5.25A2.25 2.25 0 013 15.75V9.456c0-1.081.768-2.015 1.837-2.175a48.056 48.056 0 011.913-.247m10.5 0a48.536 48.536 0 00-10.5 0m10.5 0V3.375c0-.621-.504-1.125-1.125-1.125h-8.25c-.621 0-1.125.504-1.125 1.125v3.659M18 10.5h.008v.008H18V10.5zm-3 0h.008v.008H15V10.5z"/>
         </svg>
-        Print Labels
+        Browser Print
       </button>
     </div>
+
+    <div class="zpl-status" id="zplStatus" style="display:none;"></div>
   </div>
 
   <!-- ── Label preview / print area ── -->
@@ -454,6 +488,8 @@
       previewSec.style.display = 'none';
       toolbar.style.display    = 'none';
       warning.style.display    = 'none';
+      currentJob               = null;
+      setZplStatus(null);
       fileInput.value          = '';
       manualText.value         = '';
       manualQty.value          = '1';
@@ -584,6 +620,251 @@
       return '£' + (Number.isInteger(pounds) ? pounds : pounds.toFixed(2));
     }
 
+    /* ───────────────────────────────────────────────────────────────
+     * ZPL direct printing
+     *
+     * The browser path lays out in CSS pixels at 96dpi and lets a driver
+     * resample onto the 203dpi head — that resample is where page-size
+     * negotiation, "fit to page" scaling and sub-pixel rounding creep in,
+     * and it is what puts a run out of register. ZPL skips all of it: the
+     * coordinates below are printer dots, placed exactly as written.
+     *
+     *   30mm = 239.8 dots -> ^PW240 (30.03mm)
+     *   15mm = 119.9 dots -> ^LL120 (15.02mm)
+     * ─────────────────────────────────────────────────────────────── */
+    const ZPL = {
+      widthDots:  240,
+      heightDots: 120,
+      moduleDots: 2,     // 0.25mm bars — a whole number of dots, so every
+                         // bar in the symbol quantises identically
+      priceY:     8,
+      priceH:     42,
+      barcodeY:   58,
+      barcodeH:   50
+    };
+
+    // Browser Print runs locally: plain HTTP first, then its TLS port.
+    const BROWSER_PRINT_HOSTS = ['http://127.0.0.1:9100', 'https://127.0.0.1:9101'];
+
+    // What the preview is currently showing, in printable form.
+    let currentJob = null;
+
+    const zplBtn     = document.getElementById('zplBtn');
+    const zplSaveBtn = document.getElementById('zplSaveBtn');
+    const zplStatus  = document.getElementById('zplStatus');
+
+    function setZplStatus(kind, html) {
+      if (!kind) {
+        zplStatus.style.display = 'none';
+        zplStatus.innerHTML = '';
+        return;
+      }
+      zplStatus.className     = 'zpl-status ' + kind;
+      zplStatus.innerHTML     = html;
+      zplStatus.style.display = 'block';
+    }
+
+    // ^ and ~ are ZPL control prefixes and \ is our hex-escape marker (^FH\),
+    // so all three must be sent as escapes or they corrupt the format.
+    function zplEscape(text) {
+      return String(text == null ? '' : text)
+        .replace(/\\/g, '\\5C')
+        .replace(/\^/g, '\\5E')
+        .replace(/~/g,  '\\7E');
+    }
+
+    /*
+     * Module count for a Code 128 symbol in auto mode, so the barcode can be
+     * centred exactly rather than eyeballed. Numeric data packs two digits per
+     * symbol in subset C; an odd trailing digit costs a subset switch.
+     */
+    function code128ModuleCount(data) {
+      const str = String(data);
+      let symbols = 1;                          // start pattern
+      if (/^\d+$/.test(str)) {
+        symbols += Math.floor(str.length / 2);  // digit pairs, subset C
+        if (str.length % 2) symbols += 2;       // switch to B + the odd digit
+      } else {
+        symbols += str.length;                  // subset B, one symbol per char
+      }
+      symbols += 1;                             // modulo-103 check symbol
+      return symbols * 11 + 13;                 // + stop pattern
+    }
+
+    function zplHeader() {
+      return [
+        '^XA',
+        '^CI28',                  // UTF-8 in, so £ survives the trip
+        '^PW' + ZPL.widthDots,
+        '^LL' + ZPL.heightDots,
+        '^LH0,0',
+        '^MNY',                   // gap sensing — the anti-drift setting
+        '^MMT',                   // tear-off
+        '^FH\\'                   // \ introduces hex escapes
+      ].join('');
+    }
+
+    // Font 0 advance is ~0.62 x its height, so a character count gives a safe
+    // upper bound on font size without measuring anything on the printer.
+    const FONT0_ADVANCE = 0.62;
+
+    function fitDots(text, maxDots, availableWidth) {
+      const chars = Math.max(1, String(text).length);
+      return Math.max(8, Math.min(maxDots, Math.floor(availableWidth / (FONT0_ADVANCE * chars))));
+    }
+
+    function zplPriceLabel(priceText, barcode) {
+      const barWidth = code128ModuleCount(barcode) * ZPL.moduleDots;
+      const barX     = Math.max(0, Math.round((ZPL.widthDots - barWidth) / 2));
+      // An unmapped row prints its raw price string, which can be much longer
+      // than "£99" — shrink it rather than let ^FB clip the field.
+      const priceH   = fitDots(priceText, ZPL.priceH, ZPL.widthDots);
+      return [
+        zplHeader(),
+        '^FO0,' + ZPL.priceY + '^A0N,' + priceH + ',' + priceH +
+          '^FB' + ZPL.widthDots + ',1,0,C,0^FD' + zplEscape(priceText) + '^FS',
+        '^BY' + ZPL.moduleDots + ',3,' + ZPL.barcodeH,
+        '^FO' + barX + ',' + ZPL.barcodeY + '^BCN,' + ZPL.barcodeH +
+          ',N,N,N,A^FD' + zplEscape(barcode) + '^FS',
+        '^XZ'
+      ].join('\n');
+    }
+
+    function zplTextLabel(text, fontDots, qty) {
+      const lines   = String(text).split('\n');
+      const longest = lines.reduce(function (m, l) { return Math.max(m, l.length); }, 1);
+      // The measured on-screen fit is the intent; these two clamps stop a bad
+      // measurement from pushing glyphs off the label.
+      const size = Math.max(8, Math.min(
+        fontDots,
+        Math.floor(ZPL.heightDots / lines.length),
+        fitDots('x'.repeat(longest), ZPL.heightDots, ZPL.widthDots)
+      ));
+      const y = Math.max(0, Math.round((ZPL.heightDots - lines.length * size) / 2));
+      return [
+        zplHeader(),
+        '^FO0,' + y + '^A0N,' + size + ',' + size +
+          '^FB' + ZPL.widthDots + ',' + lines.length + ',0,C,0^FD' +
+          lines.map(zplEscape).join('\\&') + '^FS',
+        qty > 1 ? '^PQ' + qty + ',0,0,N' : '',
+        '^XZ'
+      ].filter(Boolean).join('\n');
+    }
+
+    function buildZpl() {
+      if (!currentJob) return '';
+      if (currentJob.type === 'text') {
+        return zplTextLabel(currentJob.text, currentJob.fontDots, currentJob.qty);
+      }
+      return currentJob.rows
+        .map(function (r) { return zplPriceLabel(r.priceText, r.barcode); })
+        .join('\n');
+    }
+
+    function jobSize() {
+      if (!currentJob) return 0;
+      return currentJob.type === 'text' ? currentJob.qty : currentJob.rows.length;
+    }
+
+    // ── Transport: Zebra Browser Print ───────────────────────
+    async function findBrowserPrint() {
+      // Prefer the official SDK when the page has it loaded.
+      if (window.BrowserPrint && typeof window.BrowserPrint.getDefaultDevice === 'function') {
+        const device = await new Promise(function (resolve) {
+          window.BrowserPrint.getDefaultDevice('printer', resolve, function () { resolve(null); });
+        });
+        if (device) return { sdk: true, device: device };
+      }
+      for (const base of BROWSER_PRINT_HOSTS) {
+        try {
+          let res    = await fetch(base + '/default?type=printer', { cache: 'no-store' });
+          let device = res.ok ? await res.json() : null;
+          if (!device || !device.uid) {
+            res = await fetch(base + '/available', { cache: 'no-store' });
+            const list = res.ok ? await res.json() : null;
+            device = list && list.printer && list.printer[0];
+          }
+          if (device && device.uid) return { sdk: false, base: base, device: device };
+        } catch (e) {
+          /* service is not on this port — try the next */
+        }
+      }
+      return null;
+    }
+
+    async function sendZpl(target, zpl) {
+      if (target.sdk) {
+        return new Promise(function (resolve, reject) {
+          target.device.send(zpl, resolve, reject);
+        });
+      }
+      // text/plain keeps this a CORS "simple request", so there is no
+      // preflight for Browser Print to reject.
+      const res = await fetch(target.base + '/write', {
+        method:  'POST',
+        headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+        body:    JSON.stringify({ device: target.device, data: zpl })
+      });
+      if (!res.ok) throw new Error('Browser Print returned HTTP ' + res.status);
+    }
+
+    async function printViaZpl(opts) {
+      const options = opts || {};
+      const zpl     = buildZpl();
+      if (!zpl) {
+        setZplStatus('err', 'Nothing to print yet — load a CSV or generate text labels first.');
+        return false;
+      }
+
+      setZplStatus('info', 'Looking for Zebra Browser Print…');
+
+      let target = null;
+      try { target = await findBrowserPrint(); } catch (e) { target = null; }
+
+      if (!target) {
+        const msg = 'No Zebra Browser Print service on <code>127.0.0.1:9100</code> or <code>:9101</code>. ' +
+                    'Install Zebra Browser Print and select a printer in it, or use <strong>Save .zpl</strong>.';
+        setZplStatus('err', options.fallbackToBrowser ? msg + ' Falling back to browser printing.' : msg);
+        if (options.fallbackToBrowser) window.print();
+        return false;
+      }
+
+      try {
+        await sendZpl(target, zpl);
+        const n = jobSize();
+        setZplStatus('ok', 'Sent ' + n + ' label' + (n !== 1 ? 's' : '') + ' as ZPL to ' +
+                           (target.device.name || 'the default printer') + '.');
+        return true;
+      } catch (e) {
+        setZplStatus('err', 'Browser Print rejected the job: ' + e.message +
+                            (options.fallbackToBrowser ? ' Falling back to browser printing.' : ''));
+        if (options.fallbackToBrowser) window.print();
+        return false;
+      }
+    }
+
+    function saveZpl() {
+      const zpl = buildZpl();
+      if (!zpl) {
+        setZplStatus('err', 'Nothing to save yet — load a CSV or generate text labels first.');
+        return;
+      }
+      const name = 'labels-' + jobSize() + '.zpl';
+      const url  = URL.createObjectURL(new Blob([zpl], { type: 'text/plain;charset=utf-8' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = name;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+      setZplStatus('info', 'Saved <code>' + name + '</code>. Send it raw, e.g. ' +
+                           '<code>copy /b ' + name + ' \\\\localhost\\ZD230</code>');
+    }
+
+    zplBtn.addEventListener('click', function () { printViaZpl(); });
+    zplSaveBtn.addEventListener('click', saveZpl);
+
     // ── Queue from Retroble trade-in (localStorage bridge) ──
     const QUEUE_KEY = 'RETROBLE_ZEBRA_LABELS';
     (function loadQueuedLabels() {
@@ -605,7 +886,7 @@
         localStorage.removeItem(QUEUE_KEY);
         const params = new URLSearchParams(location.search);
         if (params.get('autoprint') === '1') {
-          setTimeout(function () { window.print(); }, 400);
+          setTimeout(function () { printViaZpl({ fallbackToBrowser: true }); }, 400);
         }
       } catch (e) {
         console.warn('Could not load Retroble label queue:', e);
@@ -656,6 +937,7 @@
       labelGrid.innerHTML = '';
 
       const unmapped = [];   // prices with no table entry — get FALLBACK_BARCODE
+      const jobRows  = [];   // exactly what the preview shows, handed to ZPL
 
       rows.forEach(({ price }) => {
         const pounds  = parsePrice(price);
@@ -677,6 +959,8 @@
           ? String(price).trim()
           : formatPrice(pounds);
         label.appendChild(priceEl);
+
+        jobRows.push({ priceText: priceEl.textContent, barcode: barcode });
 
         if (!mapped) {
           // Fell back — flag the CARD (never the label, which prints as-is)
@@ -708,6 +992,8 @@
         card.appendChild(label);
         labelGrid.appendChild(card);
       });
+
+      currentJob = { type: 'labels', rows: jobRows };
 
       previewSec.style.display = 'block';
       toolbar.style.display    = 'flex';
@@ -742,6 +1028,9 @@
 
       labelGrid.innerHTML = '';
 
+      let fittedText  = null;
+      let fittedLabel = null;
+
       for (let i = 0; i < qty; i += 1) {
         const card = document.createElement('div');
         card.className = 'label-card';
@@ -758,7 +1047,21 @@
         labelGrid.appendChild(card);
 
         fitManualText(textEl, label, 2);
+        fittedText  = textEl;
+        fittedLabel = label;
       }
+
+      // Reuse the measured on-screen fit. The print label is the same 2:1 box,
+      // so scaling the fitted px size by dots-per-pixel gives the ZPL equivalent
+      // without having to measure glyphs a second time.
+      const fittedPx = parseFloat(fittedText.style.fontSize) || 12;
+      const scale    = ZPL.heightDots / (fittedLabel.clientHeight || 57);
+      currentJob = {
+        type: 'text',
+        text: text,
+        qty:  qty,
+        fontDots: Math.max(8, Math.round(fittedPx * scale))
+      };
 
       previewSec.style.display = 'block';
       toolbar.style.display    = 'flex';
