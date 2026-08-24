@@ -135,6 +135,18 @@
       font-size: .9rem;
     }
 
+    /* Unmapped-price warning */
+    .warning {
+      background: #fef3c7;
+      border: 1px solid #fcd34d;
+      color: #92400e;
+      border-radius: 8px;
+      padding: 12px 16px;
+      font-size: .8125rem;
+      line-height: 1.5;
+      margin-bottom: 16px;
+    }
+
     /* Toolbar */
     .toolbar {
       display: flex;
@@ -182,6 +194,13 @@
       display: flex;
       flex-wrap: wrap;
       gap: 10px;
+    }
+
+    /* Price with no table entry — screen-only flag; the label still prints
+       normally, carrying FALLBACK_BARCODE */
+    .label-card.fallback {
+      border: 1px solid #f59e0b;
+      box-shadow: 0 0 0 2px rgba(245,158,11,.18);
     }
 
     /* Each label preview card — actual 30 × 15 mm ratio kept */
@@ -233,15 +252,20 @@
 
     /* ───── Print styles ───── */
     @media print {
+      /* One physical label = one page. Nothing may exceed this box. */
       @page {
         size: 30mm 15mm;
         margin: 0;
       }
 
-      body {
-        background: none;
-        padding: 0;
+      html, body {
+        width:  30mm;
         margin: 0;
+        padding: 0;
+        background: none;
+        line-height: 1;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
       }
 
       /* Hide everything except labels */
@@ -249,35 +273,66 @@
 
       #preview-section {
         display: block !important;
+        width: 30mm;
+        max-width: none;
+        margin: 0;
+        padding: 0;
       }
 
       .label-grid {
         display: block;
         gap: 0;
+        margin: 0;
+        padding: 0;
+        font-size: 0;      /* kill whitespace text nodes between cards */
       }
 
       .label-card {
         border: none;
         box-shadow: none;
         border-radius: 0;
-        /* force each label onto its own page */
-        page-break-after: always;
+        width: 30mm;
+        height: auto;      /* NEVER 15mm — see .label height note below */
+        margin: 0;
+        overflow: hidden;
+        /* keep a label whole, then force the next onto a new page */
+        break-inside: avoid;
+        page-break-inside: avoid;
         break-after: page;
+        page-break-after: always;
       }
+      /* no trailing blank feed after the final label */
       .label-card:last-child {
-        page-break-after: avoid;
-        break-after: avoid;
+        break-after: auto;
+        page-break-after: auto;
       }
 
+      /*
+       * Height is deliberately SHORTER than the 15mm page.
+       * A box exactly equal to the page height rounds up to 1 device pixel
+       * over on most drivers, which emits a blank page after every label —
+       * that blank still feeds a physical label, so the run drifts one
+       * position further out of register with every row printed.
+       */
       .label {
         width:  30mm;
-        height: 15mm;
-        padding: 1mm 1.5mm 0.5mm;
-        gap: 1mm;
+        height: 14.4mm;
+        padding: 0.6mm 1.5mm 0.4mm;
+        gap: 0.5mm;
+        overflow: hidden;
+        line-height: 1;
+        font-size: 16px;   /* restore after .label-grid font-size:0 */
       }
 
       .label .price {
-        font-size: 16pt;
+        font-size: 13pt;
+        line-height: 1;
+      }
+
+      .label svg {
+        max-width:  27mm;
+        max-height: 6mm;
+        height: auto;
       }
 
       .label .free-text {
@@ -306,8 +361,9 @@
 
       <div class="hint">
         <strong>CSV format</strong> — column headers are case-insensitive.<br/>
-        Required columns: <code>barcode</code> and <code>price</code><br/>
-        Example: <code>barcode,price</code> → <code>5901234123457,£2.99</code>
+        Required column: <code>price</code>. Any <code>barcode</code> / <code>sku</code> column is ignored.<br/>
+        Example: <code>£5</code> prints barcode <code>21370</code>, <code>£100</code> prints <code>21465</code>.<br/>
+        Mapped range: <strong>£5 – £100</strong> in whole pounds. Anything outside it prints <code>20635</code>.
       </div>
 
       <div class="manual-editor">
@@ -320,6 +376,9 @@
         </div>
       </div>
     </div>
+
+    <!-- Fallback-barcode notice -->
+    <div class="warning" id="warning" style="display:none;"></div>
 
     <!-- Toolbar (shown once labels are loaded) -->
     <div class="toolbar" id="toolbar" style="display:none;">
@@ -357,6 +416,8 @@
     const manualText  = document.getElementById('manualText');
     const manualQty   = document.getElementById('manualQty');
     const generateManualBtn = document.getElementById('generateManualBtn');
+    const warning     = document.getElementById('warning');
+
     const textMeasure = document.createElement('div');
     textMeasure.style.cssText = [
       'position:absolute',
@@ -392,6 +453,7 @@
       labelGrid.innerHTML = '';
       previewSec.style.display = 'none';
       toolbar.style.display    = 'none';
+      warning.style.display    = 'none';
       fileInput.value          = '';
       manualText.value         = '';
       manualQty.value          = '1';
@@ -411,12 +473,11 @@
         const payload = JSON.parse(raw);
         const rows = Array.isArray(payload) ? payload : (payload && payload.rows);
         if (!rows || !rows.length) return;
+        // Any barcode in the queue payload is discarded — buildLabels
+        // derives it from the price, same as the CSV path.
         const normalized = rows.map(function (r) {
-          return {
-            barcode: String(r.barcode || r.code || '20635').trim(),
-            price: String(r.price != null ? r.price : '').trim()
-          };
-        }).filter(function (r) { return r.barcode && r.price; });
+          return { price: String(r.price != null ? r.price : '').trim() };
+        }).filter(function (r) { return r.price; });
         if (!normalized.length) return;
         buildLabels(normalized);
         const params = new URLSearchParams(location.search);
@@ -428,6 +489,127 @@
       }
     })();
 
+    /* ───────────────────────────────────────────────────────────────
+     * Price → barcode lookup
+     *
+     * The barcode on a label is decided ENTIRELY by the row's price.
+     * Any "barcode" column in the CSV (or in the trade-in queue) is
+     * ignored. Keys are whole pounds; edit or extend lines freely.
+     * ─────────────────────────────────────────────────────────────── */
+
+    // Used for any price with no entry in the table below.
+    const FALLBACK_BARCODE = '20635';
+
+    const PRICE_BARCODES = {
+      5: '21370',
+      6: '21371',
+      7: '21372',
+      8: '21373',
+      9: '21374',
+      10: '21375',
+      11: '21376',
+      12: '21377',
+      13: '21378',
+      14: '21379',
+      15: '21380',
+      16: '21381',
+      17: '21382',
+      18: '21383',
+      19: '21384',
+      20: '21385',
+      21: '21386',
+      22: '21387',
+      23: '21388',
+      24: '21389',
+      25: '21390',
+      26: '21391',
+      27: '21392',
+      28: '21393',
+      29: '21394',
+      30: '21395',
+      31: '21396',
+      32: '21397',
+      33: '21398',
+      34: '21399',
+      35: '21400',
+      36: '21401',
+      37: '21402',
+      38: '21403',
+      39: '21404',
+      40: '21405',
+      41: '21406',
+      42: '21407',
+      43: '21408',
+      44: '21409',
+      45: '21410',
+      46: '21411',
+      47: '21412',
+      48: '21413',
+      49: '21414',
+      50: '21415',
+      51: '21416',
+      52: '21417',
+      53: '21418',
+      54: '21419',
+      55: '21420',
+      56: '21421',
+      57: '21422',
+      58: '21423',
+      59: '21424',
+      60: '21425',
+      61: '21426',
+      62: '21427',
+      63: '21428',
+      64: '21429',
+      65: '21430',
+      66: '21431',
+      67: '21432',
+      68: '21433',
+      69: '21434',
+      70: '21435',
+      71: '21436',
+      72: '21437',
+      73: '21438',
+      74: '21439',
+      75: '21440',
+      76: '21441',
+      77: '21442',
+      78: '21443',
+      79: '21444',
+      80: '21445',
+      81: '21446',
+      82: '21447',
+      83: '21448',
+      84: '21449',
+      85: '21450',
+      86: '21451',
+      87: '21452',
+      88: '21453',
+      89: '21454',
+      90: '21455',
+      91: '21456',
+      92: '21457',
+      93: '21458',
+      94: '21459',
+      95: '21460',
+      96: '21461',
+      97: '21462',
+      98: '21463',
+      99: '21464',
+      100: '21465',
+    };
+
+    // "£12" / "12" / " £12.00 " → 12   ·   anything unparseable → null
+    function parsePrice(raw) {
+      const cleaned = String(raw == null ? '' : raw).replace(/[£\s,]/g, '');
+      if (!/^\d+(\.\d{1,2})?$/.test(cleaned)) return null;
+      return Number(cleaned);
+    }
+
+    function formatPrice(pounds) {
+      return '£' + (Number.isInteger(pounds) ? pounds : pounds.toFixed(2));
+    }
+
     // ── CSV processing (no PapaParse — keeps extension CSP happy) ──
     function parseCsv(text) {
       const lines = String(text || '').replace(/^\uFEFF/, '').split(/\r?\n/).filter(function (l) {
@@ -437,17 +619,16 @@
       const headers = lines[0].split(',').map(function (h) {
         return h.trim().toLowerCase().replace(/^"|"$/g, '');
       });
-      const bi = headers.indexOf('barcode');
+      // Only 'price' matters — the barcode is derived from it.
       const pi = headers.indexOf('price');
-      if (bi < 0 || pi < 0) return [];
+      if (pi < 0) return [];
       const rows = [];
       for (let i = 1; i < lines.length; i++) {
         const cols = lines[i].split(',').map(function (c) {
           return c.trim().replace(/^"|"$/g, '');
         });
-        const barcode = cols[bi];
         const price = cols[pi];
-        if (barcode && price) rows.push({ barcode: barcode, price: price });
+        if (price) rows.push({ price: price });
       }
       return rows;
     }
@@ -457,7 +638,7 @@
       reader.onload = function () {
         const rows = parseCsv(reader.result);
         if (!rows.length) {
-          alert('No valid rows found.\nMake sure your CSV has "barcode" and "price" columns.');
+          alert('No valid rows found.\nMake sure your CSV has a "price" column.');
           return;
         }
         buildLabels(rows);
@@ -472,7 +653,13 @@
     function buildLabels(rows) {
       labelGrid.innerHTML = '';
 
-      rows.forEach(({ barcode, price }) => {
+      const unmapped = [];   // prices with no table entry — get FALLBACK_BARCODE
+
+      rows.forEach(({ price }) => {
+        const pounds  = parsePrice(price);
+        const mapped  = pounds === null ? null : (PRICE_BARCODES[pounds] || null);
+        const barcode = mapped || FALLBACK_BARCODE;
+
         // Wrapper card (screen only decoration)
         const card = document.createElement('div');
         card.className = 'label-card';
@@ -484,10 +671,16 @@
         // Price (top)
         const priceEl = document.createElement('div');
         priceEl.className = 'price';
-        // Always ensure £ prefix, avoid doubling if already present
-        const priceVal = price.replace(/^£/, '');
-        priceEl.textContent = '£' + priceVal;
+        priceEl.textContent = pounds === null
+          ? String(price).trim()
+          : formatPrice(pounds);
         label.appendChild(priceEl);
+
+        if (!mapped) {
+          // Fell back — flag the CARD (never the label, which prints as-is)
+          card.classList.add('fallback');
+          unmapped.push(String(price).trim() || '(blank)');
+        }
 
         // Barcode SVG (below price)
         const svgEl = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -502,12 +695,12 @@
             height:       14,
           });
         } catch (e) {
-          // Fallback: display barcode as text if format fails
+          // Last resort: display the code as text if the format fails
           svgEl.remove();
-          const fallback = document.createElement('span');
-          fallback.style.cssText = 'font-size:7px;font-family:monospace;word-break:break-all;text-align:center;';
-          fallback.textContent = barcode;
-          label.appendChild(fallback);
+          const asText = document.createElement('span');
+          asText.style.cssText = 'font-size:7px;font-family:monospace;word-break:break-all;text-align:center;';
+          asText.textContent = barcode;
+          label.appendChild(asText);
         }
 
         card.appendChild(label);
@@ -517,6 +710,17 @@
       previewSec.style.display = 'block';
       toolbar.style.display    = 'flex';
       labelCount.textContent   = `${rows.length} label${rows.length !== 1 ? 's' : ''} ready`;
+
+      if (unmapped.length) {
+        const list = [...new Set(unmapped)].join(', ');
+        warning.style.display = 'block';
+        warning.textContent   =
+          `${unmapped.length} label${unmapped.length !== 1 ? 's' : ''} using fallback barcode ${FALLBACK_BARCODE} — ` +
+          `no table entry for: ${list}. (Mapped range is £5–£100 in whole pounds.)`;
+      } else {
+        warning.style.display = 'none';
+        warning.textContent   = '';
+      }
     }
 
     // ── Free-text label builder (no CSV required) ──
@@ -557,6 +761,7 @@
       previewSec.style.display = 'block';
       toolbar.style.display    = 'flex';
       labelCount.textContent   = `${qty} text label${qty !== 1 ? 's' : ''} ready`;
+      warning.style.display    = 'none';   // text labels carry no barcode
     }
 
     // ── Find the largest font size that fits in the label ──
@@ -607,8 +812,10 @@
       labels.forEach(label => {
         const textEl = label.querySelector('.free-text');
         if (textEl) {
-          // Print engines can render glyphs slightly wider than screen.
-          fitManualText(textEl, label, 2);
+          // Print engines render glyphs slightly wider than screen, and the
+          // print .label is 0.6mm (~2.3px) shorter than the on-screen one —
+          // beforeprint still measures screen layout, so pad for both.
+          fitManualText(textEl, label, 5);
         }
       });
     }
