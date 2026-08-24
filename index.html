@@ -463,32 +463,6 @@
     generateManualBtn.addEventListener('click', buildManualLabels);
     window.addEventListener('beforeprint', refitManualLabelsForPrint);
 
-    // ── Queue from Retroble trade-in (localStorage bridge) ──
-    const QUEUE_KEY = 'RETROBLE_ZEBRA_LABELS';
-    (function loadQueuedLabels() {
-      try {
-        const raw = localStorage.getItem(QUEUE_KEY);
-        if (!raw) return;
-        localStorage.removeItem(QUEUE_KEY);
-        const payload = JSON.parse(raw);
-        const rows = Array.isArray(payload) ? payload : (payload && payload.rows);
-        if (!rows || !rows.length) return;
-        // Any barcode in the queue payload is discarded — buildLabels
-        // derives it from the price, same as the CSV path.
-        const normalized = rows.map(function (r) {
-          return { price: String(r.price != null ? r.price : '').trim() };
-        }).filter(function (r) { return r.price; });
-        if (!normalized.length) return;
-        buildLabels(normalized);
-        const params = new URLSearchParams(location.search);
-        if (params.get('autoprint') === '1') {
-          setTimeout(function () { window.print(); }, 400);
-        }
-      } catch (e) {
-        console.warn('Could not load Retroble label queue:', e);
-      }
-    })();
-
     /* ───────────────────────────────────────────────────────────────
      * Price → barcode lookup
      *
@@ -609,6 +583,34 @@
     function formatPrice(pounds) {
       return '£' + (Number.isInteger(pounds) ? pounds : pounds.toFixed(2));
     }
+
+    // ── Queue from Retroble trade-in (localStorage bridge) ──
+    const QUEUE_KEY = 'RETROBLE_ZEBRA_LABELS';
+    (function loadQueuedLabels() {
+      try {
+        const raw = localStorage.getItem(QUEUE_KEY);
+        if (!raw) return;
+        const payload = JSON.parse(raw);
+        const rows = Array.isArray(payload) ? payload : (payload && payload.rows);
+        if (!rows || !rows.length) return;
+        // Any barcode in the queue payload is discarded — buildLabels
+        // derives it from the price, same as the CSV path.
+        const normalized = rows.map(function (r) {
+          return { price: String(r.price != null ? r.price : '').trim() };
+        }).filter(function (r) { return r.price; });
+        if (!normalized.length) return;
+        buildLabels(normalized);
+        // Only now is the batch safe to consume — if the build throws, the
+        // queue survives a reload instead of being silently thrown away.
+        localStorage.removeItem(QUEUE_KEY);
+        const params = new URLSearchParams(location.search);
+        if (params.get('autoprint') === '1') {
+          setTimeout(function () { window.print(); }, 400);
+        }
+      } catch (e) {
+        console.warn('Could not load Retroble label queue:', e);
+      }
+    })();
 
     // ── CSV processing (no PapaParse — keeps extension CSP happy) ──
     function parseCsv(text) {
