@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Zebra ZD230 Label Printer</title>
+  <title>Zebra ZT230 Label Printer</title>
 
   <!-- JsBarcode (local — works in extension CSP and on Vercel) -->
   <script src="jsbarcode.min.js"></script>
@@ -370,7 +370,7 @@
 
   <!-- ── Upload section (hidden on print) ── -->
   <div class="container no-print">
-    <h1>Zebra ZD230 Label Printer</h1>
+    <h1>Zebra ZT230 Label Printer</h1>
     <p class="subtitle">30 mm × 15 mm labels — upload a CSV, or open from Retroble trade-in</p>
 
     <div class="card">
@@ -646,6 +646,12 @@
     // Browser Print runs locally: plain HTTP first, then its TLS port.
     const BROWSER_PRINT_HOSTS = ['http://127.0.0.1:9100', 'https://127.0.0.1:9101'];
 
+    // The print service (service/server.js) relays ZPL straight to the printer
+    // socket. It is the preferred route: nothing to install on this machine and
+    // no Windows spooler in the path, so jobs cannot wedge in the queue.
+    const PRINT_SERVICE_PORT = 7000;
+    const PRINT_SERVICE_KEY  = 'RETROBLE_PRINT_SERVICE';
+
     // What the preview is currently showing, in printable form.
     let currentJob = null;
 
@@ -766,6 +772,51 @@
       return currentJob.type === 'text' ? currentJob.qty : currentJob.rows.length;
     }
 
+    // ── Transport: local print service ───────────────────────
+    function printServiceCandidates() {
+      const found = [];
+      let remembered = null;
+      try { remembered = localStorage.getItem(PRINT_SERVICE_KEY); } catch (e) { /* private mode */ }
+
+      const override = new URLSearchParams(location.search).get('service') || remembered;
+      if (override) found.push(override.replace(/\/+$/, ''));
+
+      // If the service is serving this page, it is simply the current origin.
+      if (location.protocol === 'http:' && location.origin && location.origin !== 'null') {
+        found.push(location.origin);
+      }
+      found.push('http://localhost:' + PRINT_SERVICE_PORT);
+
+      return found.filter(function (base, i) { return found.indexOf(base) === i; });
+    }
+
+    async function findPrintService() {
+      for (const base of printServiceCandidates()) {
+        try {
+          const res = await fetch(base + '/health', { cache: 'no-store' });
+          if (!res.ok) continue;
+          const health = await res.json();
+          if (health && health.printer) return { base: base, health: health };
+        } catch (e) {
+          // Not running here, or blocked as mixed content from an https page.
+        }
+      }
+      return null;
+    }
+
+    async function sendViaService(service, zpl) {
+      // text/plain keeps this a CORS simple request; the service takes raw ZPL.
+      const res = await fetch(service.base + '/print', {
+        method:  'POST',
+        headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+        body:    zpl
+      });
+      let body = {};
+      try { body = await res.json(); } catch (e) { /* non-JSON error page */ }
+      if (!res.ok || !body.ok) throw new Error(body.error || ('HTTP ' + res.status));
+      return body;
+    }
+
     // ── Transport: Zebra Browser Print ───────────────────────
     async function findBrowserPrint() {
       // Prefer the official SDK when the page has it loaded.
@@ -816,14 +867,42 @@
         return false;
       }
 
-      setZplStatus('info', 'Looking for Zebra Browser Print…');
+      setZplStatus('info', 'Looking for a print route…');
 
+      // 1. Print service — socket-direct, no spooler, nothing installed here.
+      let service = null;
+      try { service = await findPrintService(); } catch (e) { service = null; }
+
+      if (service) {
+        const printer = service.health.printer;
+        if (printer && printer.reachable === false) {
+          // Deliberately no browser fallback here. Spooling to an unreachable
+          // printer is exactly what leaves a job wedged in the Windows queue.
+          setZplStatus('err',
+            'Print service is up at <code>' + service.base + '</code>, but the printer at <code>' +
+            printer.ip + ':' + printer.port + '</code> is not answering. ' +
+            'Check it is powered on and still holds that IP — nothing was queued.');
+          return false;
+        }
+        try {
+          const result = await sendViaService(service, zpl);
+          try { localStorage.setItem(PRINT_SERVICE_KEY, service.base); } catch (e) { /* private mode */ }
+          setZplStatus('ok',
+            'Sent ' + result.labels + ' label' + (result.labels !== 1 ? 's' : '') +
+            ' via the print service — straight to the printer socket, no spooler.');
+          return true;
+        } catch (e) {
+          setZplStatus('info', 'Print service could not print (' + e.message + ') — trying Browser Print…');
+        }
+      }
+
+      // 2. Zebra Browser Print — needs installing on this machine.
       let target = null;
       try { target = await findBrowserPrint(); } catch (e) { target = null; }
 
       if (!target) {
-        const msg = 'No Zebra Browser Print service on <code>127.0.0.1:9100</code> or <code>:9101</code>. ' +
-                    'Install Zebra Browser Print and select a printer in it, or use <strong>Save .zpl</strong>.';
+        const msg = 'No print route found. Start the print service (<code>node service/server.js</code>) ' +
+                    'or install Zebra Browser Print, or use <strong>Save .zpl</strong>.';
         setZplStatus('err', options.fallbackToBrowser ? msg + ' Falling back to browser printing.' : msg);
         if (options.fallbackToBrowser) window.print();
         return false;
@@ -832,7 +911,7 @@
       try {
         await sendZpl(target, zpl);
         const n = jobSize();
-        setZplStatus('ok', 'Sent ' + n + ' label' + (n !== 1 ? 's' : '') + ' as ZPL to ' +
+        setZplStatus('ok', 'Sent ' + n + ' label' + (n !== 1 ? 's' : '') + ' as ZPL via Browser Print to ' +
                            (target.device.name || 'the default printer') + '.');
         return true;
       } catch (e) {
@@ -858,8 +937,9 @@
       link.click();
       link.remove();
       setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
-      setZplStatus('info', 'Saved <code>' + name + '</code>. Send it raw, e.g. ' +
-                           '<code>copy /b ' + name + ' \\\\localhost\\ZD230</code>');
+      setZplStatus('info', 'Saved <code>' + name + '</code>. Send it raw with ' +
+                           '<code>copy /b ' + name + ' "\\\\localhost\\NETWORK ZEBRA PRINTER"</code>, ' +
+                           'or POST it to the print service at <code>/print</code>.');
     }
 
     zplBtn.addEventListener('click', function () { printViaZpl(); });
