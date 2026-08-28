@@ -28,19 +28,51 @@ Node 18 or newer. Nothing else — no `npm install`, zero dependencies.
 
 ```json
 {
-  "printerIp": "192.168.1.130",
+  "printerIp": "192.168.1.155",
   "printerPort": 9100,
   "listenPort": 7000,
-  "connectTimeoutMs": 4000
+  "connectTimeoutMs": 4000,
+  "autoDiscover": true,
+  "printerSerial": "52J134800953"
 }
 ```
 
-`printerIp` must match the ZT230. Give the printer a **DHCP reservation or a
-static IP** — if it moves, both this service and the Windows driver port break,
-and the failure looks like "printing just stopped".
+`printerIp` is a starting point, not a hard requirement — see below.
 
 Environment variables override the file, which is handy for testing a second
-instance: `PRINTER_IP`, `PRINTER_PORT`, `LISTEN_PORT`.
+instance: `PRINTER_IP`, `PRINTER_PORT`, `LISTEN_PORT`. An env-driven instance
+never rewrites `config.json`.
+
+## Finding the printer
+
+DHCP moves the Zebra sooner or later, and everything holding the old address
+breaks at once. So on startup the service:
+
+1. Checks whether `printerIp` still answers on the print port.
+2. Reads that device's built-in web page to confirm it is **actually the
+   Zebra** — not just something at that address.
+3. If it is not, sweeps the local `/24` for the print port and identifies each
+   host that answers.
+4. Writes the address it found back to `config.json`, so the next start is
+   instant.
+
+It also re-runs this once if a print fails mid-session, then retries the job.
+A run takes roughly two seconds.
+
+**Identification is the important part.** This network has a Lexmark, an Epson
+and a Xerox all listening on 9100. Sending ZPL to any of them would produce
+pages of junk, so a candidate is accepted only after its web page identifies it
+as a Zebra. **Nothing is ever written to port 9100 of an unidentified host.**
+
+`printerSerial` pins it further: with a serial set, only that exact printer is
+accepted. Worth keeping if you ever add a second Zebra.
+
+Set `autoDiscover: false` to switch all of this off and use `printerIp` alone.
+Add `"scanSubnet": "192.168.1"` if the printer is on a different subnet from
+the machine running the service (the sweep cannot cross subnets on its own).
+
+A **DHCP reservation is still worth setting** — discovery is a safety net, not
+a reason to skip the five minutes in your router.
 
 ## Run
 
@@ -93,8 +125,17 @@ Get-Printer -Name "NETWORK ZEBRA PRINTER" | Select-Object JobCount
 
 ## Troubleshooting
 
-**`"printer did not respond within 4000ms"`** — the ZT230 is off, asleep, or has
-changed IP. Check with `Test-NetConnection 192.168.1.130 -Port 9100`.
+**`"printer did not respond within 4000ms"`** — the ZT230 is off or asleep. If it
+had merely changed IP, discovery would have found it; the log shows every host
+it swept. Check the printer is powered on and on the same subnet.
+
+**`"printer NOT found"` at startup** — nothing on the local `/24` identified
+itself as a Zebra. If the printer sits on another subnet, set `scanSubnet` or
+`printerIp` explicitly.
+
+**`"WARNING: ... is not our Zebra - the address has been reassigned"`** — working
+as intended. Another device inherited the printer's old IP; the service refused
+to print to it and went looking for the real one.
 
 **`/health` says `reachable: false`** — same cause. The page will refuse to print
 rather than fall back to the browser, deliberately: spooling to an unreachable
