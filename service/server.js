@@ -371,6 +371,23 @@ function countLabels(zpl) {
   return matches ? matches.length : 0;
 }
 
+/*
+ * The printer takes three kinds of input on this port, and rejecting the last
+ * two would mean no way to calibrate or configure it remotely:
+ *   format   ^XA ... ^XZ   a label
+ *   control  ~JC, ~HS      immediate commands, no format block
+ *   SGD      ! U1 setvar   settings
+ * Anything else is almost certainly a mistake and is worth refusing, since
+ * arbitrary bytes on port 9100 come out as pages of garbage.
+ */
+function classifyPayload(text) {
+  const trimmed = text.trim();
+  if (trimmed.indexOf('^XA') !== -1) return 'format';
+  if (trimmed.charAt(0) === '~') return 'control';
+  if (/^!\s*U1\s/.test(trimmed)) return 'sgd';
+  return null;
+}
+
 function serveStatic(res, entry) {
   fs.readFile(path.join(ROOT, entry.file), function (err, data) {
     if (err) {
@@ -426,8 +443,12 @@ const server = http.createServer(function (req, res) {
         return;
       }
 
-      if (!zpl || zpl.indexOf('^XA') === -1) {
-        sendJson(res, 400, { ok: false, error: 'body contained no ZPL format (expected ^XA ... ^XZ)' });
+      const kind = zpl && classifyPayload(zpl);
+      if (!kind) {
+        sendJson(res, 400, {
+          ok: false,
+          error: 'unrecognised payload — expected a ^XA...^XZ format, a ~ control command (e.g. ~JC), or an "! U1" SGD command'
+        });
         return;
       }
 
@@ -435,9 +456,9 @@ const server = http.createServer(function (req, res) {
       const bytes = Buffer.byteLength(zpl, 'utf8');
 
       printWithRecovery(zpl).then(function (recovered) {
-        log('printed ' + labels + ' label(s), ' + bytes + ' bytes -> ' + cfg.printerIp + ':' + cfg.printerPort +
+        log('sent ' + kind + ' (' + labels + ' label(s), ' + bytes + ' bytes) -> ' + cfg.printerIp + ':' + cfg.printerPort +
             (recovered ? ' (after relocating the printer)' : ''));
-        sendJson(res, 200, { ok: true, labels: labels, bytes: bytes, printer: cfg.printerIp, relocated: recovered });
+        sendJson(res, 200, { ok: true, kind: kind, labels: labels, bytes: bytes, printer: cfg.printerIp, relocated: recovered });
       }).catch(function (err) {
         log('FAILED ' + labels + ' label(s): ' + err.message);
         sendJson(res, 502, {

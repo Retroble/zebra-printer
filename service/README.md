@@ -109,6 +109,24 @@ Use [NSSM](https://nssm.cc/) instead if it needs to run without anyone logged in
 `POST /print` accepts `text/plain` so browsers can call it without a CORS
 preflight. CORS is open (`*`) so a page served from anywhere can reach it.
 
+It takes three kinds of payload, since refusing the last two would leave no way
+to configure the printer remotely:
+
+| Kind | Looks like | Example |
+|------|-----------|---------|
+| format | `^XA ... ^XZ` | a label |
+| control | starts with `~` | `~JC` calibrate, `~HS` status |
+| sgd | starts with `! U1` | `! U1 getvar "media.sense_mode"` |
+
+Anything else is refused. Arbitrary bytes on port 9100 come out as pages of
+garbage, so this is worth being strict about.
+
+Calibrate the media (feeds a few labels while it measures):
+
+```
+curl -X POST --data-raw "~JC" http://localhost:7000/print
+```
+
 Smoke test — prints one label:
 
 ```
