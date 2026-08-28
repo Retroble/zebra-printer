@@ -1,5 +1,5 @@
 {
-  "printerIp": "192.168.1.130",
+  "printerIp": "192.168.1.155",
   "printerPort": 9100,
   "listenPort": 7000,
   "connectTimeoutMs": 4000
