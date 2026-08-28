@@ -616,8 +616,9 @@
       return Number(cleaned);
     }
 
+    // Always two decimal places — "£5.00", never "£5".
     function formatPrice(pounds) {
-      return '£' + (Number.isInteger(pounds) ? pounds : pounds.toFixed(2));
+      return '£' + pounds.toFixed(2);
     }
 
     /* ───────────────────────────────────────────────────────────────
