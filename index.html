@@ -649,9 +649,11 @@
       marginX:    10,    // ~1.2mm clear either side
       moduleDots: 2,     // 0.25mm bars — a whole number of dots, so every
                          // bar in the symbol quantises identically
-      priceY:     6,
-      priceH:     80,    // ~10mm — the price is the point of the label
-      barcodeY:   90,
+      priceY:     12,
+      priceH:     64,    // up to ~8mm. Backed off from 80 to buy real margin:
+                         // 10mm left only 0.75mm top and bottom, which nothing
+                         // survives once top-of-form drifts.
+      barcodeY:   82,
       barcodeH:   24,    // ~3.0mm. Short, but scan tolerance comes from the
                          // module width above, which is unchanged. Raise this
                          // first if any scanner starts struggling.
