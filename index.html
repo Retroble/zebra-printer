@@ -657,7 +657,19 @@
       barcodeH:   24,    // ~3.0mm. Short, but scan tolerance comes from the
                          // module width above, which is unchanged. Raise this
                          // first if any scanner starts struggling.
-      topOffset:  0      // ^LT nudge, once top-of-form is measured
+      /*
+       * ^LT compensation, chosen by printing a ladder of offsets and picking
+       * the one that landed square on the label. The printer finds the leading
+       * edge ~15 dots early — it reports the label as 146 dots when it is 120,
+       * counting part of the gap as label — so the format needs shifting down
+       * by that much.
+       *
+       * This is a patch, not the cure. The cure is SENSOR TYPE = TRANSMISSIVE
+       * on the front panel plus a recalibration; reflective sensing cannot see
+       * the gaps in this stock. Once label length reads ~120, set this back
+       * to 0 and the price can go back up to 80 dots.
+       */
+      topOffset:  15
     };
 
     // Browser Print runs locally: plain HTTP first, then its TLS port.
