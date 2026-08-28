@@ -648,11 +648,13 @@
       marginX:    10,    // ~1.2mm clear either side
       moduleDots: 2,     // 0.25mm bars — a whole number of dots, so every
                          // bar in the symbol quantises identically
-      priceY:     12,
-      priceH:     56,    // ~7mm tall
-      barcodeY:   74,
-      barcodeH:   36,    // ~4.5mm — comfortably scannable at this module width
-      topOffset:  0      // ^LT nudge, if the printer's top-of-form is off
+      priceY:     6,
+      priceH:     80,    // ~10mm — the price is the point of the label
+      barcodeY:   90,
+      barcodeH:   24,    // ~3.0mm. Short, but scan tolerance comes from the
+                         // module width above, which is unchanged. Raise this
+                         // first if any scanner starts struggling.
+      topOffset:  0      // ^LT nudge, once top-of-form is measured
     };
 
     // Browser Print runs locally: plain HTTP first, then its TLS port.
