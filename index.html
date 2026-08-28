@@ -257,7 +257,7 @@
     }
 
     .label .price {
-      font-size: 22px;
+      font-size: 26px;   /* matches the 56-dot (7mm) ZPL price */
       font-weight: 700;
       letter-spacing: .3px;
       white-space: nowrap;
@@ -350,13 +350,13 @@
       }
 
       .label .price {
-        font-size: 13pt;
+        font-size: 19pt;
         line-height: 1;
       }
 
       .label svg {
         max-width:  27mm;
-        max-height: 6mm;
+        max-height: 4.8mm;
         height: auto;
       }
 
@@ -632,15 +632,27 @@
      *   30mm = 239.8 dots -> ^PW240 (30.03mm)
      *   15mm = 119.9 dots -> ^LL120 (15.02mm)
      * ─────────────────────────────────────────────────────────────── */
+    /*
+     * Layout, in printer dots. Confirmed against the printer itself:
+     * ~HI reports 8 dots/mm, so 30mm = 240 and 15mm = 120 exactly.
+     *
+     * The price is deliberately much larger than the barcode — it is the bit
+     * a customer reads, and Code 128 scans reliably well below the height it
+     * was using before. Everything sits inside a margin rather than running
+     * to the label edge, because top-of-form drifts by a fraction of a
+     * millimetre and content flush to the edge is what was getting clipped.
+     */
     const ZPL = {
       widthDots:  240,
       heightDots: 120,
+      marginX:    10,    // ~1.2mm clear either side
       moduleDots: 2,     // 0.25mm bars — a whole number of dots, so every
                          // bar in the symbol quantises identically
-      priceY:     8,
-      priceH:     42,
-      barcodeY:   58,
-      barcodeH:   50
+      priceY:     12,
+      priceH:     56,    // ~7mm tall
+      barcodeY:   74,
+      barcodeH:   36,    // ~4.5mm — comfortably scannable at this module width
+      topOffset:  0      // ^LT nudge, if the printer's top-of-form is off
     };
 
     // Browser Print runs locally: plain HTTP first, then its TLS port.
@@ -706,6 +718,7 @@
         '^LH0,0',
         '^MNY',                   // gap sensing — the anti-drift setting
         '^MMT',                   // tear-off
+        '^LT' + ZPL.topOffset,    // shift the whole format if registration drifts
         '^FH\\'                   // \ introduces hex escapes
       ].join('');
     }
@@ -720,15 +733,18 @@
     }
 
     function zplPriceLabel(priceText, barcode) {
+      const usableWidth = ZPL.widthDots - 2 * ZPL.marginX;
+
       const barWidth = code128ModuleCount(barcode) * ZPL.moduleDots;
-      const barX     = Math.max(0, Math.round((ZPL.widthDots - barWidth) / 2));
+      const barX     = Math.max(ZPL.marginX, Math.round((ZPL.widthDots - barWidth) / 2));
       // An unmapped row prints its raw price string, which can be much longer
       // than "£99" — shrink it rather than let ^FB clip the field.
-      const priceH   = fitDots(priceText, ZPL.priceH, ZPL.widthDots);
+      const priceH   = fitDots(priceText, ZPL.priceH, usableWidth);
+
       return [
         zplHeader(),
-        '^FO0,' + ZPL.priceY + '^A0N,' + priceH + ',' + priceH +
-          '^FB' + ZPL.widthDots + ',1,0,C,0^FD' + zplEscape(priceText) + '^FS',
+        '^FO' + ZPL.marginX + ',' + ZPL.priceY + '^A0N,' + priceH + ',' + priceH +
+          '^FB' + usableWidth + ',1,0,C,0^FD' + zplEscape(priceText) + '^FS',
         '^BY' + ZPL.moduleDots + ',3,' + ZPL.barcodeH,
         '^FO' + barX + ',' + ZPL.barcodeY + '^BCN,' + ZPL.barcodeH +
           ',N,N,N,A^FD' + zplEscape(barcode) + '^FS',
@@ -741,16 +757,18 @@
       const longest = lines.reduce(function (m, l) { return Math.max(m, l.length); }, 1);
       // The measured on-screen fit is the intent; these two clamps stop a bad
       // measurement from pushing glyphs off the label.
+      const usableWidth  = ZPL.widthDots - 2 * ZPL.marginX;
+      const usableHeight = ZPL.heightDots - 2 * ZPL.priceY;
       const size = Math.max(8, Math.min(
         fontDots,
-        Math.floor(ZPL.heightDots / lines.length),
-        fitDots('x'.repeat(longest), ZPL.heightDots, ZPL.widthDots)
+        Math.floor(usableHeight / lines.length),
+        fitDots('x'.repeat(longest), usableHeight, usableWidth)
       ));
-      const y = Math.max(0, Math.round((ZPL.heightDots - lines.length * size) / 2));
+      const y = Math.max(ZPL.priceY, Math.round((ZPL.heightDots - lines.length * size) / 2));
       return [
         zplHeader(),
-        '^FO0,' + y + '^A0N,' + size + ',' + size +
-          '^FB' + ZPL.widthDots + ',' + lines.length + ',0,C,0^FD' +
+        '^FO' + ZPL.marginX + ',' + y + '^A0N,' + size + ',' + size +
+          '^FB' + usableWidth + ',' + lines.length + ',0,C,0^FD' +
           lines.map(zplEscape).join('\\&') + '^FS',
         qty > 1 ? '^PQ' + qty + ',0,0,N' : '',
         '^XZ'
@@ -1058,7 +1076,7 @@
             displayValue: false,
             margin:       0,
             width:        1,
-            height:       14,
+            height:       17,   // ~4.5mm, same ratio as the ZPL barcode
           });
         } catch (e) {
           // Last resort: display the code as text if the format fails
