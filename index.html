@@ -264,6 +264,32 @@
       line-height: 1;
     }
 
+    .template-pick { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; }
+    .template-pick select { padding: 6px 8px; border-radius: 6px; border: 1px solid #ccc; font: inherit; font-weight: 500; }
+
+    /* Label with a QR code: QR on the left, price + barcode on the right */
+    .label.has-qr {
+      flex-direction: row;
+      gap: 3px;
+      padding: 2px 3px;
+    }
+    .label.has-qr .qr {
+      width: 34px;
+      height: 34px;
+      flex-shrink: 0;
+      image-rendering: pixelated;
+    }
+    .label.has-qr .label-main {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+    }
+    .label.has-qr .price { font-size: 20px; }
+
     .label .free-text {
       width: 100%;
       text-align: center;
@@ -363,6 +389,11 @@
       .label .free-text {
         font-size: 9pt;
       }
+
+      .label.has-qr { padding: 0.6mm 0.8mm 0.4mm; gap: 0.8mm; }
+      .label.has-qr .qr { width: 9mm; height: 9mm; }
+      .label.has-qr .price { font-size: 14pt; }
+      .label.has-qr svg { max-width: 19mm; }
     }
   </style>
 </head>
@@ -408,6 +439,12 @@
     <!-- Toolbar (shown once labels are loaded) -->
     <div class="toolbar" id="toolbar" style="display:none;">
       <span id="labelCount"></span>
+      <label class="template-pick" for="templateSelect">Template
+        <select id="templateSelect">
+          <option value="price">Price + barcode</option>
+          <option value="price-qr">Price + barcode + QR</option>
+        </select>
+      </label>
       <button class="btn-clear" id="clearBtn">
         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
           <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
@@ -669,8 +706,42 @@
        * the gaps in this stock. Once label length reads ~120, set this back
        * to 0 and the price can go back up to 80 dots.
        */
-      topOffset:  15
+      topOffset:  15,
+      /*
+       * Labels that carry a QR (the card's customer price page) put it on the
+       * left at 2 dots per module: the shop URL is a version-3 symbol (29
+       * modules) = 58 dots, ~7.3mm square. That leaves the right-hand column
+       * wide enough for the price barcode at its normal 2-dot module width.
+       * ^BQ draws ~10 dots below its ^FO, so qrY is set 10 dots high.
+       */
+      qrMag:      2,
+      qrX:        8,
+      qrY:        21,
+      qrGap:      6,
+      qrPriceY:   16,
+      qrPriceH:   48
     };
+
+    // ── Label templates ──
+    //   price     — price + barcode (the original label)
+    //   price-qr  — QR (card's customer price page) + price + barcode
+    const TEMPLATE_KEY = 'RETROBLE_LABEL_TEMPLATE';
+    let labelTemplate = 'price';
+    try { if (localStorage.getItem(TEMPLATE_KEY) === 'price-qr') labelTemplate = 'price-qr'; } catch (e) {}
+    let lastRows = null;   // what buildLabels last drew, so a template switch can redraw it
+
+    // Retroble price-page URLs are case-insensitive, so send them uppercase:
+    // that lets the QR use alphanumeric mode, which keeps the symbol small.
+    function qrData(url) {
+      const s = String(url || '').trim();
+      return /^https:\/\/retroble-prices\.vercel\.app\/c\/[A-Za-z0-9-]+$/i.test(s) ? s.toUpperCase() : s;
+    }
+
+    // Only plain web links are accepted as QR content.
+    function cleanQr(url) {
+      const s = String(url == null ? '' : url).trim();
+      return /^https:\/\/[^\s^~\\]{1,200}$/.test(s) ? s : '';
+    }
 
     // Browser Print runs locally: plain HTTP first, then its TLS port.
     const BROWSER_PRINT_HOSTS = ['http://127.0.0.1:9100', 'https://127.0.0.1:9101'];
@@ -749,7 +820,8 @@
       return Math.max(8, Math.min(maxDots, Math.floor(availableWidth / (FONT0_ADVANCE * chars))));
     }
 
-    function zplPriceLabel(priceText, barcode) {
+    function zplPriceLabel(priceText, barcode, qr) {
+      if (qr) return zplQrPriceLabel(priceText, barcode, qr);
       const usableWidth = ZPL.widthDots - 2 * ZPL.marginX;
 
       const barWidth = code128ModuleCount(barcode) * ZPL.moduleDots;
@@ -763,6 +835,29 @@
         '^FO' + ZPL.marginX + ',' + ZPL.priceY + '^A0N,' + priceH + ',' + priceH +
           '^FB' + usableWidth + ',1,0,C,0^FD' + zplEscape(priceText) + '^FS',
         '^BY' + ZPL.moduleDots + ',3,' + ZPL.barcodeH,
+        '^FO' + barX + ',' + ZPL.barcodeY + '^BCN,' + ZPL.barcodeH +
+          ',N,N,N,A^FD' + zplEscape(barcode) + '^FS',
+        '^XZ'
+      ].join('\n');
+    }
+
+    function zplQrPriceLabel(priceText, barcode, qr) {
+      const qrDots  = 29 * ZPL.qrMag;
+      const colX    = ZPL.qrX + qrDots + ZPL.qrGap;
+      const colW    = ZPL.widthDots - colX - 6;
+      // Keep the 2-dot bars if they fit the column; drop to 1 only if a long
+      // fallback code would otherwise run off the label.
+      const module  = code128ModuleCount(barcode) * ZPL.moduleDots <= colW ? ZPL.moduleDots : 1;
+      const barW    = code128ModuleCount(barcode) * module;
+      const barX    = colX + Math.max(0, Math.round((colW - barW) / 2));
+      const priceH  = fitDots(priceText, ZPL.qrPriceH, colW);
+
+      return [
+        zplHeader(),
+        '^FO' + ZPL.qrX + ',' + ZPL.qrY + '^BQN,2,' + ZPL.qrMag + '^FDMA,' + zplEscape(qrData(qr)) + '^FS',
+        '^FO' + colX + ',' + ZPL.qrPriceY + '^A0N,' + priceH + ',' + priceH +
+          '^FB' + colW + ',1,0,C,0^FD' + zplEscape(priceText) + '^FS',
+        '^BY' + module + ',3,' + ZPL.barcodeH,
         '^FO' + barX + ',' + ZPL.barcodeY + '^BCN,' + ZPL.barcodeH +
           ',N,N,N,A^FD' + zplEscape(barcode) + '^FS',
         '^XZ'
@@ -798,7 +893,7 @@
         return zplTextLabel(currentJob.text, currentJob.fontDots, currentJob.qty);
       }
       return currentJob.rows
-        .map(function (r) { return zplPriceLabel(r.priceText, r.barcode); })
+        .map(function (r) { return zplPriceLabel(r.priceText, r.barcode, r.qr); })
         .join('\n');
     }
 
@@ -990,11 +1085,15 @@
         const rows = Array.isArray(payload) ? payload : (payload && payload.rows);
         if (!rows || !rows.length) return;
         // Any barcode in the queue payload is discarded — buildLabels
-        // derives it from the price, same as the CSV path.
+        // derives it from the price, same as the CSV path. An optional qr
+        // (the card's customer price page) is printed beside the price.
         const normalized = rows.map(function (r) {
-          return { price: String(r.price != null ? r.price : '').trim() };
+          return { price: String(r.price != null ? r.price : '').trim(), qr: cleanQr(r.qr) };
         }).filter(function (r) { return r.price; });
         if (!normalized.length) return;
+        if (payload && (payload.template === 'price' || payload.template === 'price-qr')) {
+          setTemplate(payload.template);
+        }
         buildLabels(normalized);
         // Only now is the batch safe to consume — if the build throws, the
         // queue survives a reload instead of being silently thrown away.
@@ -1019,6 +1118,7 @@
       });
       // Only 'price' matters — the barcode is derived from it.
       const pi = headers.indexOf('price');
+      const qi = headers.indexOf('qr');   // optional: link for a QR code
       if (pi < 0) return [];
       const rows = [];
       for (let i = 1; i < lines.length; i++) {
@@ -1026,7 +1126,7 @@
           return c.trim().replace(/^"|"$/g, '');
         });
         const price = cols[pi];
-        if (price) rows.push({ price: price });
+        if (price) rows.push({ price: price, qr: qi >= 0 ? cleanQr(cols[qi]) : '' });
       }
       return rows;
     }
@@ -1048,13 +1148,33 @@
     }
 
     // ── Label builder ──
+    function setTemplate(value) {
+      labelTemplate = value === 'price-qr' ? 'price-qr' : 'price';
+      const sel = document.getElementById('templateSelect');
+      if (sel) sel.value = labelTemplate;
+      try { localStorage.setItem(TEMPLATE_KEY, labelTemplate); } catch (e) {}
+    }
+    (function wireTemplateSelect() {
+      const sel = document.getElementById('templateSelect');
+      if (!sel) return;
+      sel.value = labelTemplate;
+      sel.addEventListener('change', function () {
+        setTemplate(sel.value);
+        if (lastRows) buildLabels(lastRows);
+      });
+    })();
+
     function buildLabels(rows) {
       labelGrid.innerHTML = '';
+      lastRows = rows;
+      let qrMissing = 0;
 
       const unmapped = [];   // prices with no table entry — get FALLBACK_BARCODE
       const jobRows  = [];   // exactly what the preview shows, handed to ZPL
 
-      rows.forEach(({ price }) => {
+      rows.forEach(({ price, qr: rowQr }) => {
+        const qr = labelTemplate === 'price-qr' ? (rowQr || '') : '';
+        if (labelTemplate === 'price-qr' && !qr) qrMissing += 1;
         const pounds  = parsePrice(price);
         const mapped  = pounds === null ? null : (PRICE_BARCODES[pounds] || null);
         const barcode = mapped || FALLBACK_BARCODE;
@@ -1064,8 +1184,20 @@
         card.className = 'label-card';
 
         // Label content
-        const label = document.createElement('div');
-        label.className = 'label';
+        const outer = document.createElement('div');
+        outer.className = 'label' + (qr ? ' has-qr' : '');
+        let label = outer;
+        if (qr) {
+          // Preview only — the printer draws the real QR from the ZPL.
+          const qrImg = document.createElement('img');
+          qrImg.className = 'qr';
+          qrImg.alt = 'QR';
+          qrImg.src = 'https://quickchart.io/qr?size=120&margin=0&ecLevel=M&text=' + encodeURIComponent(qrData(qr));
+          outer.appendChild(qrImg);
+          label = document.createElement('div');
+          label.className = 'label-main';
+          outer.appendChild(label);
+        }
 
         // Price (top)
         const priceEl = document.createElement('div');
@@ -1075,7 +1207,7 @@
           : formatPrice(pounds);
         label.appendChild(priceEl);
 
-        jobRows.push({ priceText: priceEl.textContent, barcode: barcode });
+        jobRows.push({ priceText: priceEl.textContent, barcode: barcode, qr: qr || '' });
 
         if (!mapped) {
           // Fell back — flag the CARD (never the label, which prints as-is)
@@ -1104,7 +1236,7 @@
           label.appendChild(asText);
         }
 
-        card.appendChild(label);
+        card.appendChild(outer);
         labelGrid.appendChild(card);
       });
 
@@ -1114,12 +1246,18 @@
       toolbar.style.display    = 'flex';
       labelCount.textContent   = `${rows.length} label${rows.length !== 1 ? 's' : ''} ready`;
 
+      const qrNote = qrMissing
+        ? ` ${qrMissing} label${qrMissing !== 1 ? 's have' : ' has'} no QR link and will print without one.`
+        : '';
       if (unmapped.length) {
         const list = [...new Set(unmapped)].join(', ');
         warning.style.display = 'block';
         warning.textContent   =
           `${unmapped.length} label${unmapped.length !== 1 ? 's' : ''} using fallback barcode ${FALLBACK_BARCODE} — ` +
-          `no table entry for: ${list}. (Mapped range is £5–£100 in whole pounds.)`;
+          `no table entry for: ${list}. (Mapped range is £5–£100 in whole pounds.)` + qrNote;
+      } else if (qrNote) {
+        warning.style.display = 'block';
+        warning.textContent   = qrNote.trim();
       } else {
         warning.style.display = 'none';
         warning.textContent   = '';
