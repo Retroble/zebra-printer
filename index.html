@@ -737,6 +737,15 @@
       return /^https:\/\/retroble-prices\.vercel\.app\/c\/[A-Za-z0-9-]+$/i.test(s) ? s.toUpperCase() : s;
     }
 
+    // Barcodes sent by the extension (Hike SKUs): digits only, 3–13 long (e.g. 127, 21377).
+    function cleanBarcode(code) {
+      const s = String(code == null ? '' : code).trim();
+      return /^\d{3,13}$/.test(s) ? s : '';
+    }
+
+    // Single cards over £100 all ring up as Hike SKU 127.
+    const OVER_100_BARCODE = '127';
+
     // Only plain web links are accepted as QR content.
     function cleanQr(url) {
       const s = String(url == null ? '' : url).trim();
@@ -824,7 +833,10 @@
       if (qr) return zplQrPriceLabel(priceText, barcode, qr);
       const usableWidth = ZPL.widthDots - 2 * ZPL.marginX;
 
-      const barWidth = code128ModuleCount(barcode) * ZPL.moduleDots;
+      // Card barcodes (from Hike) can be longer than the price codes: keep 2-dot
+      // bars when they fit, otherwise drop to 1 so nothing runs off the label.
+      const module   = code128ModuleCount(barcode) * ZPL.moduleDots <= usableWidth ? ZPL.moduleDots : 1;
+      const barWidth = code128ModuleCount(barcode) * module;
       const barX     = Math.max(ZPL.marginX, Math.round((ZPL.widthDots - barWidth) / 2));
       // An unmapped row prints its raw price string, which can be much longer
       // than "£99" — shrink it rather than let ^FB clip the field.
@@ -834,7 +846,7 @@
         zplHeader(),
         '^FO' + ZPL.marginX + ',' + ZPL.priceY + '^A0N,' + priceH + ',' + priceH +
           '^FB' + usableWidth + ',1,0,C,0^FD' + zplEscape(priceText) + '^FS',
-        '^BY' + ZPL.moduleDots + ',3,' + ZPL.barcodeH,
+        '^BY' + module + ',3,' + ZPL.barcodeH,
         '^FO' + barX + ',' + ZPL.barcodeY + '^BCN,' + ZPL.barcodeH +
           ',N,N,N,A^FD' + zplEscape(barcode) + '^FS',
         '^XZ'
@@ -1084,11 +1096,11 @@
         const payload = JSON.parse(raw);
         const rows = Array.isArray(payload) ? payload : (payload && payload.rows);
         if (!rows || !rows.length) return;
-        // Any barcode in the queue payload is discarded — buildLabels
-        // derives it from the price, same as the CSV path. An optional qr
+        // A card barcode (the card's own product in Hike) is used when the
+        // queue sends one; otherwise buildLabels derives it from the price. An optional qr
         // (the card's customer price page) is printed beside the price.
         const normalized = rows.map(function (r) {
-          return { price: String(r.price != null ? r.price : '').trim(), qr: cleanQr(r.qr) };
+          return { price: String(r.price != null ? r.price : '').trim(), qr: cleanQr(r.qr), barcode: cleanBarcode(r.barcode) };
         }).filter(function (r) { return r.price; });
         if (!normalized.length) return;
         if (payload && (payload.template === 'price' || payload.template === 'price-qr')) {
@@ -1119,6 +1131,7 @@
       // Only 'price' matters — the barcode is derived from it.
       const pi = headers.indexOf('price');
       const qi = headers.indexOf('qr');   // optional: link for a QR code
+      const bi = headers.indexOf('barcode'); // optional: card's own barcode
       if (pi < 0) return [];
       const rows = [];
       for (let i = 1; i < lines.length; i++) {
@@ -1126,7 +1139,7 @@
           return c.trim().replace(/^"|"$/g, '');
         });
         const price = cols[pi];
-        if (price) rows.push({ price: price, qr: qi >= 0 ? cleanQr(cols[qi]) : '' });
+        if (price) rows.push({ price: price, qr: qi >= 0 ? cleanQr(cols[qi]) : '', barcode: bi >= 0 ? cleanBarcode(cols[bi]) : '' });
       }
       return rows;
     }
@@ -1172,11 +1185,13 @@
       const unmapped = [];   // prices with no table entry — get FALLBACK_BARCODE
       const jobRows  = [];   // exactly what the preview shows, handed to ZPL
 
-      rows.forEach(({ price, qr: rowQr }) => {
+      rows.forEach(({ price, qr: rowQr, barcode: rowBarcode }) => {
         const qr = labelTemplate === 'price-qr' ? (rowQr || '') : '';
         if (labelTemplate === 'price-qr' && !qr) qrMissing += 1;
         const pounds  = parsePrice(price);
-        const mapped  = pounds === null ? null : (PRICE_BARCODES[pounds] || null);
+        const mapped  = cleanBarcode(rowBarcode) ||
+                        (pounds === null ? null
+                          : (PRICE_BARCODES[pounds] || (pounds > 100 ? OVER_100_BARCODE : null)));
         const barcode = mapped || FALLBACK_BARCODE;
 
         // Wrapper card (screen only decoration)
@@ -1221,7 +1236,8 @@
 
         try {
           JsBarcode(svgEl, barcode, {
-            format:       detectFormat(barcode),
+            // ZPL always prints Code 128; card barcodes preview the same way.
+            format:       cleanBarcode(rowBarcode) ? 'CODE128' : detectFormat(barcode),
             displayValue: false,
             margin:       0,
             width:        1,
@@ -1254,7 +1270,7 @@
         warning.style.display = 'block';
         warning.textContent   =
           `${unmapped.length} label${unmapped.length !== 1 ? 's' : ''} using fallback barcode ${FALLBACK_BARCODE} — ` +
-          `no table entry for: ${list}. (Mapped range is £5–£100 in whole pounds.)` + qrNote;
+          `no table entry for: ${list}. (Mapped range is £5–£100 in whole pounds; over £100 uses 127.)` + qrNote;
       } else if (qrNote) {
         warning.style.display = 'block';
         warning.textContent   = qrNote.trim();
